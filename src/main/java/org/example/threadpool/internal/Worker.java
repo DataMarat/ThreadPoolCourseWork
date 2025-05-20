@@ -7,70 +7,70 @@ import org.slf4j.LoggerFactory;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 
-/**
- * Worker is a thread responsible for executing tasks from the task queue.
- * It terminates itself if idle for keepAliveTime and exceeds core pool size.
- */
 public class Worker implements Runnable {
 
     private static final Logger logger = LoggerFactory.getLogger(Worker.class);
 
-    private final BlockingQueue<Runnable> queue;
+    private final BlockingQueue<Runnable> personalQueue;
     private final CustomThreadPool pool;
     private final long keepAliveTime;
     private final TimeUnit timeUnit;
     private volatile boolean running = true;
+    private Thread thread; // Ссылка на собственный поток
 
-    public Worker(BlockingQueue<Runnable> queue,
+    public Worker(BlockingQueue<Runnable> personalQueue,
                   CustomThreadPool pool,
                   long keepAliveTime,
                   TimeUnit timeUnit) {
-        this.queue = queue;
+        this.personalQueue = personalQueue;
         this.pool = pool;
         this.keepAliveTime = keepAliveTime;
         this.timeUnit = timeUnit;
     }
 
+    // Вызывается пулом после создания потока
+    public void setThread(Thread thread) {
+        this.thread = thread;
+    }
+
     @Override
     public void run() {
-        Thread currentThread = Thread.currentThread();
-        logger.info("[ThreadFactory] Creating new thread: {}", currentThread.getName());
+        this.thread = Thread.currentThread(); // safety net
+        logger.info("[ThreadFactory] Creating new thread: {}", thread.getName());
 
         try {
-            while (running && !Thread.currentThread().isInterrupted()) {
-
-                // Получаем задачу с таймаутом
-                Runnable task = queue.poll(keepAliveTime, timeUnit);
+            while (running && !thread.isInterrupted()) {
+                Runnable task = personalQueue.poll(keepAliveTime, timeUnit);
 
                 if (task != null) {
-                    // Выполняем задачу, если пул не завершён
                     if (pool.isShutdown()) {
-                        logger.info("[Worker] {} skipping task due to shutdown.", currentThread.getName());
+                        logger.info("[Worker] {} skipping task due to shutdown.", thread.getName());
                         continue;
                     }
 
-                    logger.info("[Worker] {} executes {}", currentThread.getName(), task);
+                    logger.info("[Worker] {} executes {}", thread.getName(), task);
                     try {
                         task.run();
                     } catch (Throwable t) {
-                        logger.error("[Worker] {} encountered error: {}", currentThread.getName(), t.toString());
+                        logger.error("[Worker] {} encountered error: {}", thread.getName(), t.toString());
                     }
-
                 } else {
-                    // Если таймаут без задач — пытаемся завершить воркера
-                    logger.info("[Worker] {} idle timeout, stopping.", currentThread.getName());
+                    logger.info("[Worker] {} idle timeout, stopping.", thread.getName());
                     break;
                 }
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } finally {
-            pool.notifyWorkerTerminated(this);
+            pool.notifyWorkerTerminated(this, personalQueue);
         }
     }
 
     public void interrupt() {
         running = false;
-        Thread.currentThread().interrupt();
+        if (thread != null) {
+            thread.interrupt();
+        }
     }
 }
+
